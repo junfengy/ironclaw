@@ -645,14 +645,23 @@ pub async fn run_incremental(conn: &libsql::Connection) -> Result<(), crate::err
 
         tracing::info!(version, name, "libSQL: applying incremental migration");
 
-        conn.execute_batch(sql).await.map_err(|e| {
+        // Wrap migration + recording in a transaction for atomicity.
+        // If the process crashes mid-migration, the transaction rolls back
+        // and the migration will be retried on next startup.
+        let tx = conn.transaction().await.map_err(|e| {
+            DatabaseError::Migration(format!(
+                "libSQL migration V{version}: failed to start transaction: {e}"
+            ))
+        })?;
+
+        tx.execute_batch(sql).await.map_err(|e| {
             DatabaseError::Migration(format!(
                 "libSQL migration V{version} ({name}) failed: {e}"
             ))
         })?;
 
-        // Record as applied
-        conn.execute(
+        // Record as applied (inside the same transaction)
+        tx.execute(
             "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
             libsql::params![version, name],
         )
@@ -660,6 +669,12 @@ pub async fn run_incremental(conn: &libsql::Connection) -> Result<(), crate::err
         .map_err(|e| {
             DatabaseError::Migration(format!(
                 "Failed to record migration V{version} ({name}): {e}"
+            ))
+        })?;
+
+        tx.commit().await.map_err(|e| {
+            DatabaseError::Migration(format!(
+                "libSQL migration V{version} ({name}): commit failed: {e}"
             ))
         })?;
 
