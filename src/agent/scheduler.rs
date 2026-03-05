@@ -109,6 +109,41 @@ impl Scheduler {
         description: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<Uuid, JobError> {
+        self.dispatch_job_inner(user_id, title, description, metadata, None)
+            .await
+    }
+
+    /// Dispatch a job with an explicit approval context for autonomous execution.
+    ///
+    /// Same as `dispatch_job`, but the worker will use the given `ApprovalContext`
+    /// to determine which tools are pre-approved (instead of blocking all non-`Never` tools).
+    pub async fn dispatch_job_with_context(
+        &self,
+        user_id: &str,
+        title: &str,
+        description: &str,
+        metadata: Option<serde_json::Value>,
+        approval_context: ApprovalContext,
+    ) -> Result<Uuid, JobError> {
+        self.dispatch_job_inner(
+            user_id,
+            title,
+            description,
+            metadata,
+            Some(approval_context),
+        )
+        .await
+    }
+
+    /// Shared implementation for `dispatch_job` and `dispatch_job_with_context`.
+    async fn dispatch_job_inner(
+        &self,
+        user_id: &str,
+        title: &str,
+        description: &str,
+        metadata: Option<serde_json::Value>,
+        approval_context: Option<ApprovalContext>,
+    ) -> Result<Uuid, JobError> {
         let job_id = self
             .context_manager
             .create_job_for_user(user_id, title, description)
@@ -132,45 +167,7 @@ impl Scheduler {
             })?;
         }
 
-        self.schedule(job_id).await?;
-        Ok(job_id)
-    }
-
-    /// Dispatch a job with an explicit approval context for autonomous execution.
-    ///
-    /// Same as `dispatch_job`, but the worker will use the given `ApprovalContext`
-    /// to determine which tools are pre-approved (instead of blocking all non-`Never` tools).
-    pub async fn dispatch_job_with_context(
-        &self,
-        user_id: &str,
-        title: &str,
-        description: &str,
-        metadata: Option<serde_json::Value>,
-        approval_context: ApprovalContext,
-    ) -> Result<Uuid, JobError> {
-        let job_id = self
-            .context_manager
-            .create_job_for_user(user_id, title, description)
-            .await?;
-
-        if let Some(meta) = metadata {
-            self.context_manager
-                .update_context(job_id, |ctx| {
-                    ctx.metadata = meta;
-                })
-                .await?;
-        }
-
-        if let Some(ref store) = self.store {
-            let ctx = self.context_manager.get_context(job_id).await?;
-            store.save_job(&ctx).await.map_err(|e| JobError::Failed {
-                id: job_id,
-                reason: format!("failed to persist job: {e}"),
-            })?;
-        }
-
-        self.schedule_with_context(job_id, Some(approval_context))
-            .await?;
+        self.schedule_with_context(job_id, approval_context).await?;
         Ok(job_id)
     }
 
