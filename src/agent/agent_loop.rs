@@ -77,6 +77,8 @@ pub struct AgentDeps {
     pub sse_tx: Option<tokio::sync::broadcast::Sender<crate::channels::web::types::SseEvent>>,
     /// HTTP interceptor for trace recording/replay.
     pub http_interceptor: Option<Arc<dyn crate::llm::recording::HttpInterceptor>>,
+    /// Audio transcription middleware for voice messages.
+    pub transcription: Option<Arc<crate::transcription::TranscriptionMiddleware>>,
 }
 
 /// The main agent that coordinates all components.
@@ -520,6 +522,12 @@ impl Agent {
                     }
                 }
             };
+
+            // Apply transcription middleware to audio attachments
+            let mut message = message;
+            if let Some(ref transcription) = self.deps.transcription {
+                transcription.process(&mut message).await;
+            }
 
             match self.handle_message(&message).await {
                 Ok(Some(response)) if !response.is_empty() => {

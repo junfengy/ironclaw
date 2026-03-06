@@ -5,6 +5,7 @@
 //! - Workspace write access (scoped to channel namespace)
 //! - Rate limiting for message emission
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::channels::wasm::capabilities::{ChannelCapabilities, EmitRateLimitConfig};
@@ -22,7 +23,7 @@ const MAX_MESSAGE_CONTENT_SIZE: usize = 64 * 1024;
 pub struct Attachment {
     /// Unique identifier within the channel (e.g., Telegram file_id).
     pub id: String,
-    /// MIME type (e.g., "image/jpeg", "application/pdf").
+    /// MIME type (e.g., "image/jpeg", "audio/ogg", "application/pdf").
     pub mime_type: String,
     /// Original filename, if known.
     pub filename: Option<String>,
@@ -34,6 +35,10 @@ pub struct Attachment {
     pub storage_key: Option<String>,
     /// Extracted text content (e.g., OCR result, PDF text, audio transcript).
     pub extracted_text: Option<String>,
+    /// Raw file bytes (for small files downloaded by the channel).
+    pub data: Vec<u8>,
+    /// Duration in seconds (for audio/video).
+    pub duration_secs: Option<u32>,
 }
 
 /// Maximum total attachment size per message (20 MB).
@@ -160,6 +165,13 @@ pub struct ChannelHostState {
 
     /// Count of emits dropped due to rate limiting.
     emits_dropped: usize,
+
+    /// Binary data stored for attachments via `store-attachment-data`.
+    /// Keyed by attachment ID, cleared after callback completes.
+    attachment_data: HashMap<String, Vec<u8>>,
+
+    /// Total bytes stored in attachment_data (for enforcing limits).
+    attachment_data_total: u64,
 }
 
 impl std::fmt::Debug for ChannelHostState {
@@ -189,6 +201,8 @@ impl ChannelHostState {
             emit_count: 0,
             emit_enabled: true,
             emits_dropped: 0,
+            attachment_data: HashMap::new(),
+            attachment_data_total: 0,
         }
     }
 
@@ -296,7 +310,14 @@ impl ChannelHostState {
                 return false;
             }
 
-            if let Some(size) = att.size_bytes {
+            // Use explicit size_bytes if available, otherwise check stored data
+            let stored_size = self
+                .attachment_data
+                .get(&att.id)
+                .map(|d| d.len() as u64)
+                .unwrap_or(att.data.len() as u64);
+            let size = att.size_bytes.unwrap_or(stored_size);
+            if size > 0 {
                 total_size = total_size.saturating_add(size);
                 if total_size > MAX_ATTACHMENT_TOTAL_SIZE {
                     tracing::warn!(
@@ -328,6 +349,62 @@ impl ChannelHostState {
     /// Get the number of emits dropped due to rate limiting.
     pub fn emits_dropped(&self) -> usize {
         self.emits_dropped
+    }
+
+    /// Store binary data for an attachment.
+    ///
+    /// Called by WASM channels to associate downloaded bytes with an attachment ID.
+    /// The data is retrieved after callback completion and merged into `Attachment::data`.
+    pub fn store_attachment_data(
+        &mut self,
+        attachment_id: &str,
+        data: Vec<u8>,
+    ) -> Result<(), WasmChannelError> {
+        const MAX_PER_ATTACHMENT: u64 = 20 * 1024 * 1024; // 20 MB
+        const MAX_TOTAL: u64 = 50 * 1024 * 1024; // 50 MB
+
+        let size = data.len() as u64;
+        if size > MAX_PER_ATTACHMENT {
+            return Err(WasmChannelError::CallbackFailed {
+                name: self.channel_name.clone(),
+                reason: format!(
+                    "Attachment data too large: {} bytes (max {})",
+                    size, MAX_PER_ATTACHMENT
+                ),
+            });
+        }
+
+        let new_total = self.attachment_data_total.saturating_add(size);
+        if new_total > MAX_TOTAL {
+            return Err(WasmChannelError::CallbackFailed {
+                name: self.channel_name.clone(),
+                reason: format!(
+                    "Total attachment data too large: {} bytes (max {})",
+                    new_total, MAX_TOTAL
+                ),
+            });
+        }
+
+        self.attachment_data_total = new_total;
+        self.attachment_data.insert(attachment_id.to_string(), data);
+        Ok(())
+    }
+
+    /// Remove stored binary data for a specific attachment ID.
+    pub fn remove_attachment_data(&mut self, id: &str) -> Option<Vec<u8>> {
+        if let Some(data) = self.attachment_data.remove(id) {
+            self.attachment_data_total =
+                self.attachment_data_total.saturating_sub(data.len() as u64);
+            Some(data)
+        } else {
+            None
+        }
+    }
+
+    /// Take all stored attachment data (clears the store).
+    pub fn take_attachment_data(&mut self) -> HashMap<String, Vec<u8>> {
+        self.attachment_data_total = 0;
+        std::mem::take(&mut self.attachment_data)
     }
 
     /// Write to workspace (scoped to channel namespace).
@@ -879,6 +956,8 @@ mod tests {
             source_url: None,
             storage_key: None,
             extracted_text: None,
+            data: Vec::new(),
+            duration_secs: None,
         }
     }
 

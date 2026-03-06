@@ -127,6 +127,7 @@ struct TelegramDocument {
 struct TelegramAudio {
     file_id: String,
     file_unique_id: String,
+    duration: Option<u32>,
     file_name: Option<String>,
     mime_type: Option<String>,
     file_size: Option<i64>,
@@ -137,6 +138,7 @@ struct TelegramAudio {
 struct TelegramVideo {
     file_id: String,
     file_unique_id: String,
+    duration: Option<u32>,
     file_name: Option<String>,
     mime_type: Option<String>,
     file_size: Option<i64>,
@@ -147,6 +149,7 @@ struct TelegramVideo {
 struct TelegramVoice {
     file_id: String,
     file_unique_id: String,
+    duration: u32,
     mime_type: Option<String>,
     file_size: Option<i64>,
 }
@@ -215,6 +218,18 @@ struct MessageEntity {
 
     /// For "mention" type, the mentioned user.
     user: Option<TelegramUser>,
+}
+
+/// Telegram File object returned by getFile.
+/// https://core.telegram.org/bots/api#file
+#[derive(Debug, Deserialize)]
+struct TelegramFile {
+    /// Identifier for this file.
+    #[allow(dead_code)]
+    file_id: String,
+
+    /// File path for downloading. Use https://api.telegram.org/file/bot<token>/<file_path>.
+    file_path: Option<String>,
 }
 
 /// Telegram API response wrapper.
@@ -936,6 +951,84 @@ fn send_message(
 }
 
 // ============================================================================
+// Voice File Download
+// ============================================================================
+
+/// Download a voice file from Telegram by file_id.
+///
+/// 1. Call getFile to get the file_path.
+/// 2. Download the file bytes from /file/bot{TOKEN}/{file_path}.
+fn download_voice_file(file_id: &str) -> Result<Vec<u8>, String> {
+    // Reject file_id containing curly braces to prevent credential placeholder injection
+    if file_id.contains('{') || file_id.contains('}') {
+        return Err("invalid file_id: contains forbidden characters".to_string());
+    }
+
+    // Step 1: Call getFile to get file_path
+    let get_file_url = format!(
+        "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
+        file_id
+    );
+
+    let headers = serde_json::json!({});
+    let result =
+        channel_host::http_request("GET", &get_file_url, &headers.to_string(), None, None);
+
+    let response = result.map_err(|e| format!("getFile request failed: {}", e))?;
+
+    if response.status != 200 {
+        let body_str = String::from_utf8_lossy(&response.body);
+        return Err(format!("getFile returned {}: {}", response.status, body_str));
+    }
+
+    let api_response: TelegramApiResponse<TelegramFile> =
+        serde_json::from_slice(&response.body)
+            .map_err(|e| format!("Failed to parse getFile response: {}", e))?;
+
+    if !api_response.ok {
+        return Err(format!(
+            "getFile API error: {}",
+            api_response
+                .description
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    let file = api_response
+        .result
+        .ok_or_else(|| "getFile returned no result".to_string())?;
+
+    let file_path = file
+        .file_path
+        .ok_or_else(|| "getFile returned no file_path".to_string())?;
+
+    // Sanitize file_path against credential placeholder injection
+    if file_path.contains('{') || file_path.contains('}') {
+        return Err("invalid file_path: contains forbidden characters".to_string());
+    }
+
+    // Step 2: Download the actual file bytes
+    let download_url = format!(
+        "https://api.telegram.org/file/bot{{TELEGRAM_BOT_TOKEN}}/{}",
+        file_path
+    );
+
+    let result =
+        channel_host::http_request("GET", &download_url, &headers.to_string(), None, None);
+
+    let response = result.map_err(|e| format!("File download failed: {}", e))?;
+
+    if response.status != 200 {
+        return Err(format!(
+            "File download returned status {}",
+            response.status
+        ));
+    }
+
+    Ok(response.body)
+}
+
+// ============================================================================
 // Attachment Sending (Photo / Document)
 // ============================================================================
 
@@ -1306,118 +1399,148 @@ fn handle_update(update: TelegramUpdate) {
     }
 }
 
+/// Build extras-json with optional duration.
+fn extras_json(duration_secs: Option<u32>) -> String {
+    match duration_secs {
+        Some(d) => format!(r#"{{"duration_secs":{}}}"#, d),
+        None => String::new(),
+    }
+}
+
+/// Build an inbound attachment with the standard fields.
+fn make_inbound_attachment(
+    id: String,
+    mime_type: String,
+    filename: Option<String>,
+    size_bytes: Option<u64>,
+    source_url: Option<String>,
+    extracted_text: Option<String>,
+    duration_secs: Option<u32>,
+) -> InboundAttachment {
+    InboundAttachment {
+        id,
+        mime_type,
+        filename,
+        size_bytes,
+        source_url,
+        storage_key: None,
+        extracted_text,
+        extras_json: extras_json(duration_secs),
+    }
+}
+
 /// Extract attachments from a Telegram message.
 fn extract_attachments(message: &TelegramMessage) -> Vec<InboundAttachment> {
     let mut attachments = Vec::new();
+    let get_file_url =
+        |file_id: &str| format!("https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}", file_id);
 
     // Photo: Telegram sends multiple sizes; use the largest (last).
     if let Some(ref photos) = message.photo {
         if let Some(largest) = photos.last() {
-            attachments.push(InboundAttachment {
-                id: largest.file_id.clone(),
-                mime_type: "image/jpeg".to_string(),
-                filename: None,
-                size_bytes: largest.file_size.map(|s| s as u64),
-                source_url: Some(format!(
-                    "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                    largest.file_id
-                )),
-                storage_key: None,
-                extracted_text: None,
-            });
+            attachments.push(make_inbound_attachment(
+                largest.file_id.clone(),
+                "image/jpeg".to_string(),
+                None,
+                largest.file_size.map(|s| s as u64),
+                Some(get_file_url(&largest.file_id)),
+                None,
+                None,
+            ));
         }
     }
 
     // Document
     if let Some(ref doc) = message.document {
-        attachments.push(InboundAttachment {
-            id: doc.file_id.clone(),
-            mime_type: doc
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "application/octet-stream".to_string()),
-            filename: doc.file_name.clone(),
-            size_bytes: doc.file_size.map(|s| s as u64),
-            source_url: Some(format!(
-                "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                doc.file_id
-            )),
-            storage_key: None,
-            extracted_text: None,
-        });
+        attachments.push(make_inbound_attachment(
+            doc.file_id.clone(),
+            doc.mime_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+            doc.file_name.clone(),
+            doc.file_size.map(|s| s as u64),
+            Some(get_file_url(&doc.file_id)),
+            None,
+            None,
+        ));
     }
 
     // Audio
     if let Some(ref audio) = message.audio {
-        attachments.push(InboundAttachment {
-            id: audio.file_id.clone(),
-            mime_type: audio
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "audio/mpeg".to_string()),
-            filename: audio.file_name.clone(),
-            size_bytes: audio.file_size.map(|s| s as u64),
-            source_url: Some(format!(
-                "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                audio.file_id
-            )),
-            storage_key: None,
-            extracted_text: None,
-        });
+        attachments.push(make_inbound_attachment(
+            audio.file_id.clone(),
+            audio.mime_type.clone().unwrap_or_else(|| "audio/mpeg".to_string()),
+            audio.file_name.clone(),
+            audio.file_size.map(|s| s as u64),
+            Some(get_file_url(&audio.file_id)),
+            None,
+            audio.duration,
+        ));
     }
 
     // Video
     if let Some(ref video) = message.video {
-        attachments.push(InboundAttachment {
-            id: video.file_id.clone(),
-            mime_type: video
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "video/mp4".to_string()),
-            filename: video.file_name.clone(),
-            size_bytes: video.file_size.map(|s| s as u64),
-            source_url: Some(format!(
-                "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                video.file_id
-            )),
-            storage_key: None,
-            extracted_text: None,
-        });
+        attachments.push(make_inbound_attachment(
+            video.file_id.clone(),
+            video.mime_type.clone().unwrap_or_else(|| "video/mp4".to_string()),
+            video.file_name.clone(),
+            video.file_size.map(|s| s as u64),
+            Some(get_file_url(&video.file_id)),
+            None,
+            video.duration,
+        ));
     }
 
-    // Voice
+    // Voice — download bytes for host-side transcription
     if let Some(ref voice) = message.voice {
-        attachments.push(InboundAttachment {
-            id: voice.file_id.clone(),
-            mime_type: voice
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "audio/ogg".to_string()),
-            filename: None,
-            size_bytes: voice.file_size.map(|s| s as u64),
-            source_url: Some(format!(
-                "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                voice.file_id
-            )),
-            storage_key: None,
-            extracted_text: None,
-        });
+        let mime_type = voice
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "audio/ogg".to_string());
+
+        // Download voice file (two HTTP roundtrips to Telegram API)
+        match download_voice_file(&voice.file_id) {
+            Ok(bytes) => {
+                channel_host::log(
+                    channel_host::LogLevel::Info,
+                    &format!("Downloaded voice file: {} bytes", bytes.len()),
+                );
+                // Store binary data via host function (avoids bloating the record)
+                if let Err(e) = channel_host::store_attachment_data(&voice.file_id, &bytes) {
+                    channel_host::log(
+                        channel_host::LogLevel::Error,
+                        &format!("Failed to store voice data: {}", e),
+                    );
+                }
+            }
+            Err(e) => {
+                channel_host::log(
+                    channel_host::LogLevel::Error,
+                    &format!("Failed to download voice file: {}", e),
+                );
+            }
+        };
+
+        attachments.push(make_inbound_attachment(
+            voice.file_id.clone(),
+            mime_type,
+            Some(format!("voice_{}.ogg", voice.file_id)),
+            voice.file_size.map(|s| s as u64),
+            Some(get_file_url(&voice.file_id)),
+            None,
+            Some(voice.duration),
+        ));
     }
 
     // Sticker
     if let Some(ref sticker) = message.sticker {
-        attachments.push(InboundAttachment {
-            id: sticker.file_id.clone(),
-            mime_type: "image/webp".to_string(),
-            filename: None,
-            size_bytes: sticker.file_size.map(|s| s as u64),
-            source_url: Some(format!(
-                "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
-                sticker.file_id
-            )),
-            storage_key: None,
-            extracted_text: None,
-        });
+        attachments.push(make_inbound_attachment(
+            sticker.file_id.clone(),
+            "image/webp".to_string(),
+            None,
+            sticker.file_size.map(|s| s as u64),
+            Some(get_file_url(&sticker.file_id)),
+            None,
+            None,
+        ));
     }
 
     attachments
@@ -1429,11 +1552,18 @@ fn handle_message(message: TelegramMessage) {
     let attachments = extract_attachments(&message);
 
     // Use text or caption (for media messages)
+    let has_voice = message.voice.is_some();
     let content = message
         .text
         .filter(|t| !t.is_empty())
         .or_else(|| message.caption.filter(|c| !c.is_empty()))
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if has_voice {
+                "[Voice note]".to_string()
+            } else {
+                String::new()
+            }
+        });
 
     // Allow messages with attachments even if text content is empty
     if content.is_empty() && attachments.is_empty() {

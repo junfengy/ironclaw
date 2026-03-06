@@ -496,6 +496,7 @@ impl TestRigBuilder {
                     ironclaw::llm::recording::ReplayingHttpInterceptor::new(http_exchanges),
                 ))
             },
+            transcription: None,
         };
 
         // 7. Create TestChannel and ChannelManager.

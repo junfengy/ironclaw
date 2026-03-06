@@ -352,6 +352,7 @@ fn extract_slack_attachments(files: &Option<Vec<SlackFile>>) -> Vec<InboundAttac
             source_url: f.url_private.clone(),
             storage_key: None,
             extracted_text: None,
+            extras_json: String::new(),
         })
         .collect()
 }

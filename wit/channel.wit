@@ -115,12 +115,14 @@ interface channel-host {
 
     /// A file or media attachment on an inbound message (channel → agent).
     ///
-    /// Contains metadata about the file; raw bytes are NOT included.
-    /// The host downloads file content separately via source-url when needed.
+    /// Core fields are part of the record. Extended metadata (duration, dimensions,
+    /// codec, etc.) goes in `extras-json` to avoid WIT record changes when new
+    /// properties are needed. Binary data (e.g., downloaded voice bytes) should be
+    /// stored via `store-attachment-data` rather than inlined in the record.
     record inbound-attachment {
         /// Unique identifier within the channel (e.g., Telegram file_id).
         id: string,
-        /// MIME type (e.g., "image/jpeg", "application/pdf").
+        /// MIME type (e.g., "image/jpeg", "audio/ogg", "application/pdf").
         mime-type: string,
         /// Original filename, if known.
         filename: option<string>,
@@ -133,7 +135,27 @@ interface channel-host {
         storage-key: option<string>,
         /// Extracted text content (e.g., OCR result, PDF text, audio transcript).
         extracted-text: option<string>,
+        /// Extensible metadata as JSON string.
+        ///
+        /// Used for properties that may be added over time without changing WIT.
+        /// Well-known keys:
+        /// - "duration_secs": u32 — duration in seconds (audio/video)
+        /// - "width": u32, "height": u32 — pixel dimensions (images/video)
+        /// - "codec": string — audio/video codec
+        /// - "thumbnail_file_id": string — thumbnail identifier
+        extras-json: string,
     }
+
+    /// Store binary data for an attachment (e.g., downloaded voice note bytes).
+    ///
+    /// Call this before emit-message to associate raw bytes with an attachment.
+    /// The host retrieves the data after the callback using the attachment ID.
+    ///
+    /// Security:
+    /// - Maximum 20MB per attachment
+    /// - Maximum 50MB total per callback execution
+    /// - Data is cleared after the callback completes
+    store-attachment-data: func(attachment-id: string, data: list<u8>) -> result<_, string>;
 
     /// A message to emit to the agent.
     record emitted-message {

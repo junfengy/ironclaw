@@ -538,15 +538,36 @@ impl near::agent::channel_host::Host for ChannelStoreData {
 
         let attachments: Vec<crate::channels::wasm::host::Attachment> = msg
             .attachments
-            .iter()
-            .map(|a| crate::channels::wasm::host::Attachment {
-                id: a.id.clone(),
-                mime_type: a.mime_type.clone(),
-                filename: a.filename.clone(),
-                size_bytes: a.size_bytes,
-                source_url: a.source_url.clone(),
-                storage_key: a.storage_key.clone(),
-                extracted_text: a.extracted_text.clone(),
+            .into_iter()
+            .map(|a| {
+                // Parse extras-json for well-known fields
+                let extras: serde_json::Value = if a.extras_json.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_str(&a.extras_json).unwrap_or(serde_json::Value::Null)
+                };
+                let duration_secs = extras
+                    .get("duration_secs")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+
+                // Merge stored binary data (from store-attachment-data host call)
+                let data = self
+                    .host_state
+                    .remove_attachment_data(&a.id)
+                    .unwrap_or_default();
+
+                crate::channels::wasm::host::Attachment {
+                    id: a.id,
+                    mime_type: a.mime_type,
+                    filename: a.filename,
+                    size_bytes: a.size_bytes,
+                    source_url: a.source_url,
+                    storage_key: a.storage_key,
+                    extracted_text: a.extracted_text,
+                    data,
+                    duration_secs,
+                }
             })
             .collect();
 
@@ -568,6 +589,21 @@ impl near::agent::channel_host::Host for ChannelStoreData {
                 tracing::error!(error = %e, "Failed to emit message to host state");
             }
         }
+    }
+
+    fn store_attachment_data(
+        &mut self,
+        attachment_id: String,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        tracing::debug!(
+            attachment_id = %attachment_id,
+            size = data.len(),
+            "WASM store_attachment_data called"
+        );
+        self.host_state
+            .store_attachment_data(&attachment_id, data)
+            .map_err(|e| e.to_string())
     }
 
     fn pairing_upsert_request(
@@ -2000,12 +2036,15 @@ impl WasmChannel {
                     .iter()
                     .map(|a| crate::channels::IncomingAttachment {
                         id: a.id.clone(),
+                        kind: crate::channels::AttachmentKind::from_mime_type(&a.mime_type),
                         mime_type: a.mime_type.clone(),
                         filename: a.filename.clone(),
                         size_bytes: a.size_bytes,
                         source_url: a.source_url.clone(),
                         storage_key: a.storage_key.clone(),
                         extracted_text: a.extracted_text.clone(),
+                        data: a.data.clone(),
+                        duration_secs: a.duration_secs,
                     })
                     .collect();
                 msg = msg.with_attachments(incoming_attachments);
@@ -2284,12 +2323,15 @@ impl WasmChannel {
                     .iter()
                     .map(|a| crate::channels::IncomingAttachment {
                         id: a.id.clone(),
+                        kind: crate::channels::AttachmentKind::from_mime_type(&a.mime_type),
                         mime_type: a.mime_type.clone(),
                         filename: a.filename.clone(),
                         size_bytes: a.size_bytes,
                         source_url: a.source_url.clone(),
                         storage_key: a.storage_key.clone(),
                         extracted_text: a.extracted_text.clone(),
+                        data: a.data.clone(),
+                        duration_secs: a.duration_secs,
                     })
                     .collect();
                 msg = msg.with_attachments(incoming_attachments);
@@ -4125,6 +4167,8 @@ mod tests {
                 source_url: Some("https://api.telegram.org/file/photo123".to_string()),
                 storage_key: None,
                 extracted_text: None,
+                data: Vec::new(),
+                duration_secs: None,
             },
             Attachment {
                 id: "doc456".to_string(),
@@ -4134,6 +4178,8 @@ mod tests {
                 source_url: None,
                 storage_key: Some("store/doc456".to_string()),
                 extracted_text: Some("Report contents...".to_string()),
+                data: Vec::new(),
+                duration_secs: None,
             },
         ];
 

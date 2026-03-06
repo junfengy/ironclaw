@@ -674,6 +674,7 @@ fn extract_whatsapp_attachments(message: &WhatsAppMessage) -> Vec<InboundAttachm
             source_url: None, // WhatsApp requires Graph API call with media ID to get URL
             storage_key: None,
             extracted_text: img.caption.clone(),
+            extras_json: String::new(),
         });
     }
 
@@ -689,6 +690,7 @@ fn extract_whatsapp_attachments(message: &WhatsAppMessage) -> Vec<InboundAttachm
             source_url: None,
             storage_key: None,
             extracted_text: audio.caption.clone(),
+            extras_json: String::new(),
         });
     }
 
@@ -704,6 +706,7 @@ fn extract_whatsapp_attachments(message: &WhatsAppMessage) -> Vec<InboundAttachm
             source_url: None,
             storage_key: None,
             extracted_text: video.caption.clone(),
+            extras_json: String::new(),
         });
     }
 
@@ -719,6 +722,7 @@ fn extract_whatsapp_attachments(message: &WhatsAppMessage) -> Vec<InboundAttachm
             source_url: None,
             storage_key: None,
             extracted_text: doc.caption.clone(),
+            extras_json: String::new(),
         });
     }
 

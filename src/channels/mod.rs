@@ -37,7 +37,8 @@ pub mod web;
 mod webhook_server;
 
 pub use channel::{
-    Channel, IncomingAttachment, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
+    AttachmentKind, Channel, IncomingAttachment, IncomingMessage, MessageStream, OutgoingResponse,
+    StatusUpdate,
 };
 pub use http::HttpChannel;
 pub use manager::ChannelManager;
