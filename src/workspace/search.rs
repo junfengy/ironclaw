@@ -249,12 +249,7 @@ mod tests {
         }
     }
 
-    fn make_result_with_path(
-        chunk_id: Uuid,
-        doc_id: Uuid,
-        path: &str,
-        rank: u32,
-    ) -> RankedResult {
+    fn make_result_with_path(chunk_id: Uuid, doc_id: Uuid, path: &str, rank: u32) -> RankedResult {
         RankedResult {
             chunk_id,
             document_id: doc_id,
@@ -298,7 +293,11 @@ mod tests {
 
         // Verify exact paths are preserved
         let paths: Vec<&str> = results.iter().map(|r| r.document_path.as_str()).collect();
-        assert!(paths.contains(&"notes/todo.md"), "missing notes/todo.md in {:?}", paths);
+        assert!(
+            paths.contains(&"notes/todo.md"),
+            "missing notes/todo.md in {:?}",
+            paths
+        );
         assert!(
             paths.contains(&"journal/2024-01-15.md"),
             "missing journal/2024-01-15.md in {:?}",
