@@ -201,8 +201,12 @@ impl Validator {
         ) {
             match value {
                 serde_json::Value::String(s) => {
-                    let string_result = validator.validate(s);
-                    *result = std::mem::take(result).merge(string_result);
+                    // Skip empty strings — emptiness is a schema validation concern,
+                    // not a safety concern. Tools like memory_tree accept path: "".
+                    if !s.is_empty() {
+                        let string_result = validator.validate(s);
+                        *result = std::mem::take(result).merge(string_result);
+                    }
                 }
                 serde_json::Value::Array(arr) => {
                     for item in arr {
@@ -301,6 +305,23 @@ mod tests {
                 .iter()
                 .any(|e| e.code == ValidationErrorCode::ForbiddenContent)
         );
+    }
+
+    #[test]
+    fn test_tool_params_allows_empty_strings() {
+        let validator = Validator::new();
+        // memory_tree sends {"path": ""} which should be allowed
+        let params = serde_json::json!({"path": "", "depth": 1});
+        let result = validator.validate_tool_params(&params);
+        assert!(result.is_valid, "empty string in tool params should be allowed");
+    }
+
+    #[test]
+    fn test_tool_params_rejects_forbidden_content() {
+        let validator = Validator::new().forbid_pattern("forbidden");
+        let params = serde_json::json!({"input": "this is forbidden content"});
+        let result = validator.validate_tool_params(&params);
+        assert!(!result.is_valid);
     }
 
     #[test]
