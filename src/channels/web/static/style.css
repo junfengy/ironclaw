@@ -3202,6 +3202,26 @@ mark {
   color: var(--text);
 }
 
+.thread-delete-btn {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.thread-delete-btn:hover {
+  color: var(--danger);
+}
+
+.thread-item:hover .thread-delete-btn {
+  display: inline-block;
+}
+
 .thread-item.active {
   background: var(--bg-tertiary);
   color: var(--accent);

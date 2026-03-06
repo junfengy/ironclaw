@@ -161,6 +161,11 @@ pub trait ConversationStore: Send + Sync {
         conversation_id: Uuid,
         user_id: &str,
     ) -> Result<bool, DatabaseError>;
+    async fn delete_conversation(
+        &self,
+        conversation_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError>;
 }
 
 #[async_trait]

@@ -209,6 +209,10 @@ pub async fn start_server(
         .route("/api/chat/history", get(chat_history_handler))
         .route("/api/chat/threads", get(chat_threads_handler))
         .route("/api/chat/thread/new", post(chat_new_thread_handler))
+        .route(
+            "/api/chat/threads/{id}",
+            axum::routing::delete(chat_delete_thread_handler),
+        )
         // Memory
         .route("/api/memory/tree", get(memory_tree_handler))
         .route("/api/memory/list", get(memory_list_handler))
@@ -1148,6 +1152,50 @@ async fn chat_new_thread_handler(
     }
 
     Ok(Json(info))
+}
+
+async fn chat_delete_thread_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(thread_id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    // Prevent deleting the assistant thread
+    if let Ok(assistant_id) = store
+        .get_or_create_assistant_conversation(&state.user_id, "gateway")
+        .await
+    {
+        if thread_id == assistant_id {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Cannot delete the assistant thread".to_string(),
+            ));
+        }
+    }
+
+    let deleted = store
+        .delete_conversation(thread_id, &state.user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if !deleted {
+        return Err((StatusCode::NOT_FOUND, "Thread not found".to_string()));
+    }
+
+    // Remove from in-memory session if present
+    if let Some(ref session_manager) = state.session_manager {
+        let session = session_manager.get_or_create_session(&state.user_id).await;
+        let mut sess = session.lock().await;
+        sess.threads.remove(&thread_id);
+        if sess.active_thread == Some(thread_id) {
+            sess.active_thread = None;
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- Memory handlers ---

@@ -129,6 +129,7 @@ function apiFetch(path, options) {
         throw new Error(body || (res.status + ' ' + res.statusText));
       });
     }
+    if (res.status === 204) return null;
     return res.json();
   });
 }
@@ -1285,6 +1286,12 @@ function loadThreads() {
       meta.className = 'thread-meta';
       meta.textContent = (thread.turn_count || 0) + ' turns';
       item.appendChild(meta);
+      const del = document.createElement('button');
+      del.className = 'thread-delete-btn';
+      del.textContent = '\u00D7';
+      del.title = 'Delete conversation';
+      del.addEventListener('click', (e) => { e.stopPropagation(); deleteThread(thread.id); });
+      item.appendChild(del);
       item.addEventListener('click', () => switchThread(thread.id));
       list.appendChild(item);
     }
@@ -1327,6 +1334,20 @@ function createNewThread() {
     loadThreads();
   }).catch((err) => {
     showToast('Failed to create thread: ' + err.message, 'error');
+  });
+}
+
+function deleteThread(threadId) {
+  if (!confirm('Delete this conversation? This cannot be undone.')) return;
+  apiFetch('/api/chat/threads/' + threadId, { method: 'DELETE' }).then(() => {
+    if (currentThreadId === threadId) {
+      currentThreadId = assistantThreadId || null;
+      document.getElementById('chat-messages').innerHTML = '';
+      if (currentThreadId) loadHistory();
+    }
+    loadThreads();
+  }).catch((err) => {
+    showToast('Failed to delete thread: ' + err.message, 'error');
   });
 }
 

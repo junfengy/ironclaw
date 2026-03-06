@@ -352,4 +352,27 @@ impl ConversationStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
         Ok(found.is_some())
     }
+
+    async fn delete_conversation(
+        &self,
+        conversation_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let conn = self.connect().await?;
+        // Delete messages first (libsql may not support ON DELETE CASCADE)
+        conn.execute(
+            "DELETE FROM conversation_messages WHERE conversation_id = ?1",
+            libsql::params![conversation_id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM conversations WHERE id = ?1 AND user_id = ?2",
+                libsql::params![conversation_id.to_string(), user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(rows_affected > 0)
+    }
 }

@@ -1526,6 +1526,22 @@ impl Store {
         Ok(id)
     }
 
+    /// Delete a conversation and all its messages (via CASCADE).
+    pub async fn delete_conversation(
+        &self,
+        conversation_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let conn = self.conn().await?;
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
+                &[&conversation_id, &user_id],
+            )
+            .await?;
+        Ok(rows_affected > 0)
+    }
+
     /// Check whether a conversation belongs to the given user.
     pub async fn conversation_belongs_to_user(
         &self,
